@@ -19,7 +19,8 @@
 //     (null for the header).
 //
 // Where the reference walks a character at a time and grows each field a character at a time,
-// this reader scans each field to its next delimiter and slices it out whole; the piecewise
+// this reader scans each field to its next delimiter and slices it out whole; the next LF
+// and CR are cached searches, so a quoted field's content is not rescanned per field; the piecewise
 // paths (a stray CR inside a field, a doubled quote, a CR inside quotes, junk after a closing
 // quote, the re-read of an unterminated quote) run only on the fields that need them.
 //
@@ -37,6 +38,13 @@ export function run(input) {
 
   let pos = 0; // the next character to read
   let line = 1; // the line that character is on
+  // Cached next LF / CR: each is the first occurrence at or after the position it was
+  // computed from (or -1 for none). pos moves only forward (the unterminated-quote
+  // re-read is the one step back, and it resets both), so a cached index that is still
+  // >= the query start is still the first occurrence at or after it; a stale one is
+  // recomputed on demand. Together the two searches cross each character once.
+  let nLF = -2;
+  let nCR = -2;
   if (n !== 0 && text.charCodeAt(0) === 0xfeff) pos = 1;
 
   // The record being read: the line it starts on and the index in rows it takes (null: header).
@@ -110,6 +118,8 @@ export function run(input) {
       // as unquoted.
       pos = open + 1;
       line = openLine;
+      nLF = -2;
+      nCR = -2;
       errors.push({ code: 'unterminated_quote', line: recordLine, row: recordRow });
       const parts = ['"'];
       scanUnquoted(parts);
@@ -118,14 +128,15 @@ export function run(input) {
     }
     const cs = open + 1; // the content is text[cs .. q)
     let value;
-    const crAt = hasDouble ? -2 : text.indexOf('\r', cs);
-    if (!hasDouble && (crAt === -1 || crAt >= q)) {
-      // Clean content: no doubled quote, no CR. Slice it whole and count its LFs.
+    if (nCR < cs) nCR = text.indexOf('\r', cs);
+    if (!hasDouble && (nCR === -1 || nCR >= q)) {
+      // Clean content: no doubled quote, no CR. Slice it whole and count its LFs by
+      // stepping the cached LF search from one LF to the next.
       value = text.slice(cs, q);
-      let j = text.indexOf('\n', cs);
-      while (j !== -1 && j < q) {
+      if (nLF < cs) nLF = text.indexOf('\n', cs);
+      while (nLF !== -1 && nLF < q) {
         line++;
-        j = text.indexOf('\n', j + 1);
+        nLF = text.indexOf('\n', nLF + 1);
       }
     } else {
       // The content holds a doubled quote or a CR (or both): build it from pieces. Every '"'
